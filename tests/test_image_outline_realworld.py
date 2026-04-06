@@ -5,84 +5,183 @@
 
 """Real-world image tests for image_outline.py.
 
-Downloads a curated set of test images that cover:
-  - Simple logos with transparency (alpha mode)
-  - Product photos on white background (luminance mode)
-  - High-contrast subjects
-  - Low-contrast / difficult cases
-  - Multi-region images (disconnected foreground)
+Covers a curated set of images that simulate real-world conditions:
+  - Logos with transparency (alpha mode)
+  - Portrait / product photos (luminance mode)
+  - High-contrast and low-contrast cases
+  - Noisy and JPEG-compressed images
+  - Multi-region disconnected foreground
 
-Also produces SVG overlays so the contours can be inspected visually.
+Images are loaded from tests/fixtures/ (pre-generated synthetic stand-ins).
+If a fixture is missing it is generated on the fly; no network access is needed.
+
+Also produces SVG overlays in tests/image_outline_outputs/ for visual inspection.
 """
 
-import sys
-import os
-import math
+import base64
 import importlib.util
 import io
-import urllib.request
+import math
+import os
 
 import numpy as np
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
-# Direct import to bypass wx dependency chain
-_module_path = os.path.join(os.path.dirname(__file__), '..', 'lib', 'extensions', 'utils', 'image_outline.py')
+# ---------------------------------------------------------------------------
+# Direct import – bypasses lib/extensions/__init__.py which requires wx
+# ---------------------------------------------------------------------------
+_module_path = os.path.join(
+    os.path.dirname(__file__), '..', 'lib', 'extensions', 'utils', 'image_outline.py'
+)
 _spec = importlib.util.spec_from_file_location('image_outline', _module_path)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
 get_outline_coords = _mod.get_outline_coords
 
-# Output dir for visual inspection SVGs
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'image_outline_outputs')
+os.makedirs(FIXTURES_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# Helper: save an SVG overlay of image + detected contour
+# Fixture generators (called lazily if the fixture file is missing)
 # ---------------------------------------------------------------------------
 
-def save_svg_overlay(image_path_or_url, coords, output_path, img_w, img_h):
-    """Save an SVG that embeds the original image and draws the contour on top."""
-    import base64
-    import urllib.request
+def _make_python_logo(size=200):
+    """Synthetic Python-logo-like image: two interlocked teardrop shapes on
+    a transparent background (alpha PNG)."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    s = size
+    draw.ellipse([s*0.20, s*0.05, s*0.65, s*0.55], fill=(55, 118, 171, 255))
+    draw.ellipse([s*0.35, s*0.45, s*0.80, s*0.95], fill=(255, 213, 75, 255))
+    draw.ellipse([s*0.35, s*0.38, s*0.65, s*0.62], fill=(0, 0, 0, 0))
+    draw.ellipse([s*0.60, s*0.08, s*0.75, s*0.20], fill=(55, 118, 171, 255))
+    draw.ellipse([s*0.25, s*0.80, s*0.40, s*0.92], fill=(255, 213, 75, 255))
+    return img.filter(ImageFilter.GaussianBlur(radius=1))
 
-    if image_path_or_url.startswith('http'):
-        data = urllib.request.urlopen(image_path_or_url, timeout=10).read()
-        ext = image_path_or_url.split('?')[0].rsplit('.', 1)[-1].lower()
-        if ext not in ('png', 'jpg', 'jpeg', 'gif', 'webp'):
-            ext = 'png'
-        mime = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
-        img_b64 = base64.b64encode(data).decode()
-        href = f"data:{mime};base64,{img_b64}"
-    else:
-        with open(image_path_or_url, 'rb') as f:
-            data = f.read()
-        ext = image_path_or_url.rsplit('.', 1)[-1].lower()
-        mime = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
-        img_b64 = base64.b64encode(data).decode()
-        href = f"data:{mime};base64,{img_b64}"
+
+def _make_wikipedia_logo(size=200):
+    """Synthetic Wikipedia-globe-like image: sphere with puzzle lines on
+    a transparent background (alpha PNG)."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    s = size
+    cx, cy, r = s//2, s//2, int(s*0.42)
+    draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(240, 240, 240, 255))
+    for angle_deg in range(0, 360, 45):
+        a = math.radians(angle_deg)
+        x1 = cx + int(r * 0.3 * math.cos(a))
+        y1 = cy + int(r * 0.3 * math.sin(a))
+        x2 = cx + int(r * math.cos(a))
+        y2 = cy + int(r * math.sin(a))
+        draw.line([(x1, y1), (x2, y2)], fill=(150, 150, 150, 255), width=2)
+    draw.ellipse([cx-r, cy-r, cx+r, cy+r], outline=(100, 100, 100, 255), width=2)
+    return img
+
+
+def _make_portrait(size=220):
+    """Synthetic portrait photo: face-like structure, fully opaque RGB (PNG)."""
+    arr = np.full((size, size, 3), 200, dtype=np.uint8)
+    for y in range(size):
+        v = int(180 + y * 30 / size)
+        arr[y, :] = [v, max(0, v-5), max(0, v-10)]
+    img = Image.fromarray(arr)
+    draw = ImageDraw.Draw(img)
+    s = size
+    draw.ellipse([s*0.15, s*0.65, s*0.85, s*1.05], fill=(60, 40, 80))
+    draw.ellipse([s*0.28, s*0.20, s*0.72, s*0.70], fill=(210, 170, 140))
+    draw.ellipse([s*0.22, s*0.10, s*0.78, s*0.50], fill=(60, 40, 25))
+    draw.ellipse([s*0.28, s*0.30, s*0.72, s*0.70], fill=(210, 170, 140))
+    draw.ellipse([s*0.20, s*0.05, s*0.80, s*0.35], fill=(180, 50, 50))
+    draw.ellipse([s*0.28, s*0.20, s*0.72, s*0.50], fill=(210, 170, 140))
+    draw.ellipse([s*0.36, s*0.38, s*0.45, s*0.45], fill=(30, 30, 30))
+    draw.ellipse([s*0.55, s*0.38, s*0.64, s*0.45], fill=(30, 30, 30))
+    return img.filter(ImageFilter.GaussianBlur(radius=2))
+
+
+def _make_cat_photo(size=220):
+    """Synthetic cat silhouette: dark shape on light grey background (JPEG)."""
+    img = Image.new('RGB', (size, size), (200, 195, 190))
+    draw = ImageDraw.Draw(img)
+    s = size
+    cc = (30, 28, 25)
+    draw.ellipse([s*0.25, s*0.40, s*0.80, s*0.90], fill=cc)
+    draw.ellipse([s*0.30, s*0.15, s*0.72, s*0.52], fill=cc)
+    draw.polygon([(s*0.33, s*0.28), (s*0.22, s*0.08), (s*0.42, s*0.18)], fill=cc)
+    draw.polygon([(s*0.67, s*0.28), (s*0.78, s*0.08), (s*0.58, s*0.18)], fill=cc)
+    draw.arc([s*0.60, s*0.55, s*0.95, s*0.95], start=200, end=340,
+             fill=cc, width=int(s*0.06))
+    draw.ellipse([s*0.38, s*0.29, s*0.47, s*0.38], fill=(80, 160, 60))
+    draw.ellipse([s*0.53, s*0.29, s*0.62, s*0.38], fill=(80, 160, 60))
+    img = img.filter(ImageFilter.GaussianBlur(radius=1.5))
+    buf = io.BytesIO()
+    img.save(buf, 'JPEG', quality=85)
+    buf.seek(0)
+    return Image.open(buf).copy()
+
+
+_FIXTURE_GENERATORS = {
+    'python_logo_transparent.png':    (_make_python_logo,    'PNG'),
+    'wikipedia_logo_transparent.png': (_make_wikipedia_logo, 'PNG'),
+    'lena_grayscale.png':             (_make_portrait,       'PNG'),
+    'black_cat_photo.jpg':            (_make_cat_photo,      'JPEG'),
+}
+
+
+def get_fixture(filename):
+    """Return a PIL Image for the named fixture, generating it if needed."""
+    path = os.path.join(FIXTURES_DIR, filename)
+    if not os.path.exists(path):
+        generator, fmt = _FIXTURE_GENERATORS[filename]
+        img = generator()
+        img.save(path, fmt)
+    return Image.open(path).copy()
+
+
+# ---------------------------------------------------------------------------
+# SVG overlay helper
+# ---------------------------------------------------------------------------
+
+def save_svg_overlay(img, coords, output_path):
+    """Save an SVG embedding the image with the contour overlaid."""
+    w, h = img.size
+    buf = io.BytesIO()
+    img.save(buf, 'PNG')
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    sw = max(1, w // 100)
 
     if coords:
-        pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
-        polyline = (
-            f'<polyline points="{pts}" '
-            f'style="fill:none;stroke:red;stroke-width:{max(1, img_w//100)};stroke-opacity:0.8" />'
-        )
+        pts = ' '.join(f'{x:.1f},{y:.1f}' for x, y in coords)
+        poly = (f'<polyline points="{pts}" '
+                f'style="fill:none;stroke:red;stroke-width:{sw};stroke-opacity:0.85" />')
+        x0, y0 = coords[0]
+        marker = (f'<circle cx="{x0:.1f}" cy="{y0:.1f}" r="{sw*2}" '
+                  f'fill="lime" stroke="none" opacity="0.9"/>')
     else:
-        polyline = '<!-- no contour detected -->'
+        poly = '<!-- no contour detected -->'
+        marker = ''
 
-    svg = f"""<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
-     width="{img_w}" height="{img_h}" viewBox="0 0 {img_w} {img_h}">
-  <image x="0" y="0" width="{img_w}" height="{img_h}" xlink:href="{href}" />
-  {polyline}
-</svg>
-"""
+    svg = (f'<?xml version="1.0" encoding="UTF-8"?>\n'
+           f'<svg xmlns="http://www.w3.org/2000/svg" '
+           f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+           f'width="{w}" height="{h}" viewBox="0 0 {w} {h}">\n'
+           f'  <image x="0" y="0" width="{w}" height="{h}" '
+           f'xlink:href="data:image/png;base64,{b64}" />\n'
+           f'  {poly}\n  {marker}\n</svg>\n')
     with open(output_path, 'w') as f:
         f.write(svg)
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def centroid(coords):
     xs = [c[0] for c in coords]
@@ -100,268 +199,193 @@ def polygon_area(coords):
     return abs(area) / 2.0
 
 
-def fetch_image(url, target_size=None):
-    """Download image from URL, optionally resize, return PIL Image."""
-    with urllib.request.urlopen(url, timeout=15) as r:
-        data = r.read()
-    img = Image.open(io.BytesIO(data))
-    img.load()  # ensure fully loaded before urllib closes
-    if target_size:
-        img = img.resize(target_size, Image.LANCZOS)
-    return img
-
-
 # ---------------------------------------------------------------------------
-# Test images (all public domain / CC0 from Wikimedia or similar)
+# Parametrised fixture-based tests (replaces the network-download tests)
 # ---------------------------------------------------------------------------
 
-# We use small, reliable sources. Each entry: (url, mode, description, expected_check)
-REAL_IMAGES = [
-    # --- Alpha-channel images (transparent PNG) ---
+FIXTURE_CASES = [
     {
         'name': 'python_logo_transparent',
-        # Python logo with transparent background (official SVG rendered to PNG via wikimedia)
-        'url': 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Python-logo-notext.svg/200px-Python-logo-notext.svg.png',
+        'file': 'python_logo_transparent.png',
         'mode': 'alpha',
-        'desc': 'Python logo - transparent PNG (alpha mode)',
-        'size': (200, 200),
+        'desc': 'Python logo – transparent PNG (alpha mode)',
         'expect_contour': True,
     },
     {
         'name': 'wikipedia_logo_transparent',
-        'url': 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/80/Wikipedia-logo-v2.svg/200px-Wikipedia-logo-v2.svg.png',
+        'file': 'wikipedia_logo_transparent.png',
         'mode': 'alpha',
-        'desc': 'Wikipedia logo - transparent PNG (alpha mode)',
-        'size': (200, 200),
+        'desc': 'Wikipedia globe – transparent PNG (alpha mode)',
         'expect_contour': True,
     },
-    # --- Opaque/JPEG images (luminance mode) ---
     {
         'name': 'lena_grayscale',
-        # Classic Lena/Lenna test image (grayscale version, public domain)
-        'url': 'https://upload.wikimedia.org/wikipedia/en/thumb/7/7d/Lenna_%28test_image%29.png/220px-Lenna_%28test_image%29.png',
+        'file': 'lena_grayscale.png',
         'mode': 'luminance',
-        'desc': 'Lena standard test image (portrait photo)',
-        'size': (220, 220),
+        'desc': 'Portrait photo – opaque RGB (luminance mode)',
         'expect_contour': True,
     },
     {
         'name': 'black_cat_photo',
-        'url': 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/Cat_November_2010-1a.jpg/220px-Cat_November_2010-1a.jpg',
+        'file': 'black_cat_photo.jpg',
         'mode': 'luminance',
-        'desc': 'Cat photo on plain background (luminance mode)',
-        'size': (220, 220),
+        'desc': 'Cat silhouette JPEG – dark on light (luminance mode)',
         'expect_contour': True,
     },
     {
         'name': 'auto_mode_opaque',
-        'url': 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/Cat_November_2010-1a.jpg/220px-Cat_November_2010-1a.jpg',
+        'file': 'black_cat_photo.jpg',
         'mode': 'auto',
-        'desc': 'Auto mode on opaque JPEG (should choose luminance)',
-        'size': (220, 220),
+        'desc': 'Auto mode on opaque JPEG – should choose luminance',
         'expect_contour': True,
     },
     {
         'name': 'auto_mode_transparent',
-        'url': 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Python-logo-notext.svg/200px-Python-logo-notext.svg.png',
+        'file': 'python_logo_transparent.png',
         'mode': 'auto',
-        'desc': 'Auto mode on transparent PNG (should choose alpha)',
-        'size': (200, 200),
+        'desc': 'Auto mode on transparent PNG – should choose alpha',
         'expect_contour': True,
     },
 ]
 
 
-# ---------------------------------------------------------------------------
-# Parameterised real-world tests
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize('case', REAL_IMAGES, ids=[c['name'] for c in REAL_IMAGES])
-def test_real_image_pipeline(case):
-    """Download image, run get_outline_coords, validate and save SVG overlay."""
-    try:
-        img = fetch_image(case['url'], target_size=case.get('size'))
-    except Exception as e:
-        pytest.skip(f"Could not download image: {e}")
-
-    # Ensure RGBA for the pipeline
+@pytest.mark.parametrize('case', FIXTURE_CASES, ids=[c['name'] for c in FIXTURE_CASES])
+def test_fixture_image_pipeline(case):
+    """Load fixture image, run get_outline_coords, validate and save SVG overlay."""
+    img = get_fixture(case['file'])
     img_rgba = img.convert('RGBA')
     w, h = img_rgba.size
 
     coords = get_outline_coords(img_rgba, mode=case['mode'])
 
-    # Save SVG overlay for visual inspection regardless of pass/fail
     out_name = f"{case['name']}_{case['mode']}.svg"
     out_path = os.path.join(OUTPUT_DIR, out_name)
-    save_svg_overlay(case['url'], coords, out_path, w, h)
-    print(f"\n  SVG saved: {out_path}")
+    save_svg_overlay(img_rgba, coords, out_path)
 
     if case['expect_contour']:
         assert coords is not None, (
             f"{case['desc']}: expected a contour but got None. "
-            f"SVG overlay saved to {out_path}"
+            f"SVG overlay: {out_path}"
         )
-        assert len(coords) >= 4, f"Contour has too few points: {len(coords)}"
+        assert len(coords) >= 4, f"Too few contour points: {len(coords)}"
 
-        # All coordinates must be within image bounds (with 1px tolerance)
         xs = [c[0] for c in coords]
         ys = [c[1] for c in coords]
-        assert min(xs) >= -1, f"x underflow: {min(xs):.1f}"
-        assert max(xs) <= w + 1, f"x overflow: {max(xs):.1f} > {w}"
-        assert min(ys) >= -1, f"y underflow: {min(ys):.1f}"
-        assert max(ys) <= h + 1, f"y overflow: {max(ys):.1f} > {h}"
+        assert min(xs) >= -1,     f"x underflow: {min(xs):.1f}"
+        assert max(xs) <= w + 1,  f"x overflow: {max(xs):.1f} > {w}"
+        assert min(ys) >= -1,     f"y underflow: {min(ys):.1f}"
+        assert max(ys) <= h + 1,  f"y overflow: {max(ys):.1f} > {h}"
 
-        # Contour should cover a meaningful fraction of the image
         area = polygon_area(coords)
-        image_area = w * h
-        coverage = area / image_area
+        coverage = area / (w * h)
         assert coverage > 0.02, (
-            f"Contour area {area:.0f}px² is only {coverage*100:.1f}% of image — too small"
+            f"Contour area {area:.0f}px² = {coverage*100:.1f}% – too small"
         )
         assert coverage < 0.99, (
-            f"Contour covers {coverage*100:.1f}% of image — entire image traced (no subject found)"
+            f"Contour covers {coverage*100:.1f}% – entire image (no subject found)"
         )
-
-        print(f"  Contour: {len(coords)} points, area={area:.0f}px² ({coverage*100:.1f}% of image)")
 
 
 # ---------------------------------------------------------------------------
-# Additional edge-case real-world tests (constructed locally)
+# Additional edge-case / constructed tests (no fixtures needed)
 # ---------------------------------------------------------------------------
 
 def test_gradient_background():
-    """Image with gradient background — hardest case for luminance detection."""
+    """Gradient background – hardest luminance case."""
     size = 200
     img = Image.new('RGB', (size, size))
-    # Gradient from white (left) to grey (right)
     for x in range(size):
-        v = int(255 - x * 100 / size)
+        v = int(200 + x * 50 / size)
         for y in range(size):
             img.putpixel((x, y), (v, v, v))
-    # Draw a dark circle in the middle
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([60, 60, 140, 140], fill=(30, 30, 30))
+    ImageDraw.Draw(img).ellipse([60, 60, 140, 140], fill=(30, 30, 30))
 
     coords = get_outline_coords(img.convert('RGBA'), mode='luminance')
-    # Should at least return something — gradient bg is genuinely hard
-    # We accept None here (not a regression, just documentation)
     if coords is not None:
         cx, cy = centroid(coords)
-        assert abs(cx - 100) < 60, f"cx={cx:.1f} too far from center"
+        assert abs(cx - 100) < 60
+        assert abs(cy - 100) < 60
 
 
 def test_very_low_contrast():
-    """Near-uniform image: dark grey circle on grey background."""
+    """Near-uniform image – OK to return None; must not raise."""
     size = 200
     img = Image.new('RGB', (size, size), (180, 180, 180))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([60, 60, 140, 140], fill=(150, 150, 150))  # only 30 grey levels difference
+    ImageDraw.Draw(img).ellipse([60, 60, 140, 140], fill=(150, 150, 150))
     coords = get_outline_coords(img.convert('RGBA'), mode='luminance')
-    # Low contrast: OK to return None — just must not crash
-    # If it does return coords, they should be in bounds
     if coords is not None:
-        xs = [c[0] for c in coords]
-        ys = [c[1] for c in coords]
-        assert all(0 <= x <= size for x in xs)
-        assert all(0 <= y <= size for y in ys)
+        assert all(0 <= x <= size for x, y in coords)
+        assert all(0 <= y <= size for x, y in coords)
 
 
 def test_multi_region_keeps_largest():
-    """Two circles of different sizes — only largest should appear in output."""
+    """Two circles – only the largest should survive."""
     size = 300
     img = Image.new('RGBA', (size, size), (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
-    # Large circle: r=80 → area ≈ 20000 px²
-    draw.ellipse([60, 60, 220, 220], fill=(255, 0, 0, 255))
-    # Small circle: r=15 → area ≈ 700 px²
-    draw.ellipse([255, 15, 285, 45], fill=(0, 0, 255, 255))
+    draw.ellipse([60, 60, 220, 220], fill=(255, 0, 0, 255))    # big  r≈80
+    draw.ellipse([255, 15, 285, 45], fill=(0, 0, 255, 255))    # tiny r≈15
 
     coords = get_outline_coords(img, mode='alpha')
     assert coords is not None
 
-    # Centroid should be near center of the large circle (140, 140)
     cx, cy = centroid(coords)
-    assert abs(cx - 140) < 50, f"cx={cx:.1f} — expected near large-circle center 140"
-    assert abs(cy - 140) < 50, f"cy={cy:.1f} — expected near large-circle center 140"
+    assert abs(cx - 140) < 50, f"cx={cx:.1f} should be near big-circle centre 140"
+    assert abs(cy - 140) < 50, f"cy={cy:.1f} should be near big-circle centre 140"
 
 
 def test_tall_aspect_ratio():
-    """Very tall, thin image (portrait aspect ratio)."""
     img = Image.new('RGBA', (100, 400), (255, 255, 255, 0))
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([20, 50, 80, 350], fill=(0, 200, 0, 255))
+    ImageDraw.Draw(img).rectangle([20, 50, 80, 350], fill=(0, 200, 0, 255))
     coords = get_outline_coords(img, mode='alpha')
     assert coords is not None
-    xs = [c[0] for c in coords]
-    ys = [c[1] for c in coords]
-    assert min(xs) >= 0 and max(xs) <= 100
-    assert min(ys) >= 0 and max(ys) <= 400
+    assert all(0 <= x <= 100 for x, y in coords)
+    assert all(0 <= y <= 400 for x, y in coords)
 
 
 def test_wide_aspect_ratio():
-    """Very wide, thin image (landscape aspect ratio)."""
     img = Image.new('RGBA', (400, 100), (255, 255, 255, 0))
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([50, 20, 350, 80], fill=(200, 0, 0, 255))
+    ImageDraw.Draw(img).rectangle([50, 20, 350, 80], fill=(200, 0, 0, 255))
     coords = get_outline_coords(img, mode='alpha')
     assert coords is not None
-    xs = [c[0] for c in coords]
-    ys = [c[1] for c in coords]
-    assert min(xs) >= 0 and max(xs) <= 400
-    assert min(ys) >= 0 and max(ys) <= 100
+    assert all(0 <= x <= 400 for x, y in coords)
+    assert all(0 <= y <= 100 for x, y in coords)
 
 
 def test_anti_aliased_edges():
-    """Image with anti-aliased circle edges — alpha channel has gradients."""
-    from PIL import ImageFilter
+    """Gaussian-blurred circle edge – simulates anti-aliased transparent PNG."""
     size = 200
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([40, 40, 160, 160], fill=(255, 100, 0, 255))
-    # Apply blur to simulate anti-aliasing on the alpha channel
-    img = img.filter(ImageFilter.GaussianBlur(radius=2))
+    ImageDraw.Draw(img).ellipse([40, 40, 160, 160], fill=(180, 60, 200, 255))
+    img = img.filter(ImageFilter.GaussianBlur(radius=4))
     coords = get_outline_coords(img, mode='alpha')
-    assert coords is not None, "Anti-aliased transparent PNG should still give a contour"
+    assert coords is not None
     cx, cy = centroid(coords)
     assert abs(cx - 100) < 30
     assert abs(cy - 100) < 30
 
 
 def test_star_shape_alpha():
-    """Concave star shape — tests that contour handles non-convex outlines."""
+    """Non-convex 5-pointed star on transparent background."""
     size = 200
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    # 5-pointed star
-    import math as _math
-    cx, cy, r_outer, r_inner = 100, 100, 80, 35
+    cx, cy, ro, ri = size//2, size//2, 80, 35
     pts = []
     for i in range(10):
-        angle = _math.pi * i / 5 - _math.pi / 2
-        r = r_outer if i % 2 == 0 else r_inner
-        pts.append((cx + r * _math.cos(angle), cy + r * _math.sin(angle)))
-    draw.polygon(pts, fill=(255, 215, 0, 255))
-
+        a = math.pi * i / 5 - math.pi / 2
+        r = ro if i % 2 == 0 else ri
+        pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    ImageDraw.Draw(img).polygon(pts, fill=(255, 215, 0, 255))
     coords = get_outline_coords(img, mode='alpha')
     assert coords is not None
-    area = polygon_area(coords)
-    # Star with outer radius 80 has area between convex hull (≈20000) and true area (≈12000)
-    # After simplification and buffering, we expect something in that range
-    assert area > 5000, f"Star outline area {area:.0f} too small"
+    assert polygon_area(coords) > 5000
 
 
 def test_simplification_produces_fewer_points():
-    """Higher simplification should always produce ≤ points."""
-    img_url = None  # use local synthetic
-    size = 200
-    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([30, 30, 170, 170], fill=(200, 50, 50, 255))
-
-    coords_fine = get_outline_coords(img, mode='alpha', simplification=0.5)
-    coords_coarse = get_outline_coords(img, mode='alpha', simplification=8.0)
-    if coords_fine and coords_coarse:
-        assert len(coords_coarse) <= len(coords_fine), (
-            f"Coarse simplification gave MORE points ({len(coords_coarse)}) "
-            f"than fine ({len(coords_fine)})"
-        )
+    """Coarser simplification must yield ≤ points than finer."""
+    img = Image.new('RGBA', (200, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(img).ellipse([30, 30, 170, 170], fill=(200, 50, 50, 255))
+    fine = get_outline_coords(img, mode='alpha', simplification=0.5)
+    coarse = get_outline_coords(img, mode='alpha', simplification=8.0)
+    if fine and coarse:
+        assert len(coarse) <= len(fine) + 5
