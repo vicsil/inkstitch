@@ -79,9 +79,13 @@ def get_outline_coords(pil_image, mode='auto', threshold_adjust=0, simplificatio
     if coords is None:
         return None
 
-    # Scale coordinates back to original pixel space
+    # Scale coordinates back to original pixel space and clamp to image bounds
     inv_scale = 1.0 / scale
-    return [(x * inv_scale, y * inv_scale) for x, y in coords]
+    return [
+        (max(0.0, min(orig_w, x * inv_scale)),
+         max(0.0, min(orig_h, y * inv_scale)))
+        for x, y in coords
+    ]
 
 
 # ---------------------------------------------------------------------------
