@@ -5,17 +5,18 @@
 
 """Real-world image tests for image_outline.py.
 
-Covers a curated set of images that simulate real-world conditions:
-  - Logos with transparency (alpha mode)
-  - Portrait / product photos (luminance mode)
-  - High-contrast and low-contrast cases
-  - Noisy and JPEG-compressed images
-  - Multi-region disconnected foreground
+All image files found in tests/fixtures/ are loaded automatically — no manual
+listing is needed.  Drop any PNG, JPEG, WEBP, BMP, or TIFF into that folder
+and it will be picked up on the next test run.
 
-Images are loaded from tests/fixtures/ (pre-generated synthetic stand-ins).
-If a fixture is missing it is generated on the fly; no network access is needed.
+The detection mode ('alpha' or 'luminance') is chosen automatically based on
+whether the image has a meaningful alpha channel.
 
-Also produces SVG overlays in tests/image_outline_outputs/ for visual inspection.
+Fixture generators: the four bundled synthetic images are (re-)created by
+tests/fixtures/generate_fixtures.py whenever they are missing.
+
+SVG overlays showing the detected contour are written to
+tests/image_outline_outputs/ for visual inspection.
 """
 
 import base64
@@ -38,24 +39,26 @@ _spec = importlib.util.spec_from_file_location('image_outline', _module_path)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
-get_outline_coords = _mod.get_outline_coords
+get_outline_coords   = _mod.get_outline_coords
+has_meaningful_alpha = _mod.has_meaningful_alpha
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'image_outline_outputs')
+OUTPUT_DIR   = os.path.join(os.path.dirname(__file__), 'image_outline_outputs')
 os.makedirs(FIXTURES_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR,   exist_ok=True)
+
+# Supported image extensions (anything PIL can open)
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp'}
 
 
 # ---------------------------------------------------------------------------
-# Fixture generators (called lazily if the fixture file is missing)
+# Fixture generators  (called lazily when a file is missing)
 # ---------------------------------------------------------------------------
 
 def _make_python_logo(size=200):
-    """Synthetic Python-logo-like image: two interlocked teardrop shapes on
-    a transparent background (alpha PNG)."""
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     s = size
@@ -68,26 +71,23 @@ def _make_python_logo(size=200):
 
 
 def _make_wikipedia_logo(size=200):
-    """Synthetic Wikipedia-globe-like image: sphere with puzzle lines on
-    a transparent background (alpha PNG)."""
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     s = size
-    cx, cy, r = s//2, s//2, int(s*0.42)
+    cx, cy, r = s // 2, s // 2, int(s * 0.42)
     draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(240, 240, 240, 255))
-    for angle_deg in range(0, 360, 45):
-        a = math.radians(angle_deg)
-        x1 = cx + int(r * 0.3 * math.cos(a))
-        y1 = cy + int(r * 0.3 * math.sin(a))
-        x2 = cx + int(r * math.cos(a))
-        y2 = cy + int(r * math.sin(a))
-        draw.line([(x1, y1), (x2, y2)], fill=(150, 150, 150, 255), width=2)
+    for deg in range(0, 360, 45):
+        a = math.radians(deg)
+        draw.line(
+            [(cx + int(r*0.3*math.cos(a)), cy + int(r*0.3*math.sin(a))),
+             (cx + int(r*math.cos(a)),     cy + int(r*math.sin(a)))],
+            fill=(150, 150, 150, 255), width=2
+        )
     draw.ellipse([cx-r, cy-r, cx+r, cy+r], outline=(100, 100, 100, 255), width=2)
     return img
 
 
 def _make_portrait(size=220):
-    """Synthetic portrait photo: face-like structure, fully opaque RGB (PNG)."""
     arr = np.full((size, size, 3), 200, dtype=np.uint8)
     for y in range(size):
         v = int(180 + y * 30 / size)
@@ -95,19 +95,18 @@ def _make_portrait(size=220):
     img = Image.fromarray(arr)
     draw = ImageDraw.Draw(img)
     s = size
-    draw.ellipse([s*0.15, s*0.65, s*0.85, s*1.05], fill=(60, 40, 80))
+    draw.ellipse([s*0.15, s*0.65, s*0.85, s*1.05], fill=(60,  40,  80))
     draw.ellipse([s*0.28, s*0.20, s*0.72, s*0.70], fill=(210, 170, 140))
-    draw.ellipse([s*0.22, s*0.10, s*0.78, s*0.50], fill=(60, 40, 25))
+    draw.ellipse([s*0.22, s*0.10, s*0.78, s*0.50], fill=(60,  40,  25))
     draw.ellipse([s*0.28, s*0.30, s*0.72, s*0.70], fill=(210, 170, 140))
-    draw.ellipse([s*0.20, s*0.05, s*0.80, s*0.35], fill=(180, 50, 50))
+    draw.ellipse([s*0.20, s*0.05, s*0.80, s*0.35], fill=(180, 50,  50))
     draw.ellipse([s*0.28, s*0.20, s*0.72, s*0.50], fill=(210, 170, 140))
-    draw.ellipse([s*0.36, s*0.38, s*0.45, s*0.45], fill=(30, 30, 30))
-    draw.ellipse([s*0.55, s*0.38, s*0.64, s*0.45], fill=(30, 30, 30))
+    draw.ellipse([s*0.36, s*0.38, s*0.45, s*0.45], fill=(30,  30,  30))
+    draw.ellipse([s*0.55, s*0.38, s*0.64, s*0.45], fill=(30,  30,  30))
     return img.filter(ImageFilter.GaussianBlur(radius=2))
 
 
 def _make_cat_photo(size=220):
-    """Synthetic cat silhouette: dark shape on light grey background (JPEG)."""
     img = Image.new('RGB', (size, size), (200, 195, 190))
     draw = ImageDraw.Draw(img)
     s = size
@@ -127,7 +126,7 @@ def _make_cat_photo(size=220):
     return Image.open(buf).copy()
 
 
-_FIXTURE_GENERATORS = {
+_BUNDLED_FIXTURES = {
     'python_logo_transparent.png':    (_make_python_logo,    'PNG'),
     'wikipedia_logo_transparent.png': (_make_wikipedia_logo, 'PNG'),
     'lena_grayscale.png':             (_make_portrait,       'PNG'),
@@ -135,14 +134,41 @@ _FIXTURE_GENERATORS = {
 }
 
 
-def get_fixture(filename):
-    """Return a PIL Image for the named fixture, generating it if needed."""
-    path = os.path.join(FIXTURES_DIR, filename)
-    if not os.path.exists(path):
-        generator, fmt = _FIXTURE_GENERATORS[filename]
-        img = generator()
-        img.save(path, fmt)
-    return Image.open(path).copy()
+def _ensure_bundled_fixtures():
+    """Generate the bundled synthetic fixture images if any are missing."""
+    for filename, (generator, fmt) in _BUNDLED_FIXTURES.items():
+        path = os.path.join(FIXTURES_DIR, filename)
+        if not os.path.exists(path):
+            img = generator()
+            img.save(path, fmt)
+
+
+# ---------------------------------------------------------------------------
+# Auto-discovery: scan FIXTURES_DIR for all image files
+# ---------------------------------------------------------------------------
+
+def _discover_fixture_cases():
+    """Return a list of test-case dicts for every image in FIXTURES_DIR.
+
+    Each image is tested in 'auto' mode (the pipeline chooses alpha vs
+    luminance).  The test ID is the bare filename.
+    """
+    _ensure_bundled_fixtures()
+
+    cases = []
+    for fname in sorted(os.listdir(FIXTURES_DIR)):
+        ext = os.path.splitext(fname)[1].lower()
+        if ext not in IMAGE_EXTENSIONS:
+            continue
+        # Skip the generator script itself (safety)
+        if fname.endswith('.py'):
+            continue
+        cases.append({
+            'name': os.path.splitext(fname)[0],
+            'file': fname,
+            'mode': 'auto',
+        })
+    return cases
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +176,6 @@ def get_fixture(filename):
 # ---------------------------------------------------------------------------
 
 def save_svg_overlay(img, coords, output_path):
-    """Save an SVG embedding the image with the contour overlaid."""
     w, h = img.size
     buf = io.BytesIO()
     img.save(buf, 'PNG')
@@ -159,13 +184,13 @@ def save_svg_overlay(img, coords, output_path):
 
     if coords:
         pts = ' '.join(f'{x:.1f},{y:.1f}' for x, y in coords)
-        poly = (f'<polyline points="{pts}" '
-                f'style="fill:none;stroke:red;stroke-width:{sw};stroke-opacity:0.85" />')
+        poly = (f'<polyline points="{pts}" style="fill:none;stroke:red;'
+                f'stroke-width:{sw};stroke-opacity:0.85" />')
         x0, y0 = coords[0]
         marker = (f'<circle cx="{x0:.1f}" cy="{y0:.1f}" r="{sw*2}" '
                   f'fill="lime" stroke="none" opacity="0.9"/>')
     else:
-        poly = '<!-- no contour detected -->'
+        poly   = '<!-- no contour detected -->'
         marker = ''
 
     svg = (f'<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -200,98 +225,56 @@ def polygon_area(coords):
 
 
 # ---------------------------------------------------------------------------
-# Parametrised fixture-based tests (replaces the network-download tests)
+# Auto-discovered parametrised test
 # ---------------------------------------------------------------------------
 
-FIXTURE_CASES = [
-    {
-        'name': 'python_logo_transparent',
-        'file': 'python_logo_transparent.png',
-        'mode': 'alpha',
-        'desc': 'Python logo – transparent PNG (alpha mode)',
-        'expect_contour': True,
-    },
-    {
-        'name': 'wikipedia_logo_transparent',
-        'file': 'wikipedia_logo_transparent.png',
-        'mode': 'alpha',
-        'desc': 'Wikipedia globe – transparent PNG (alpha mode)',
-        'expect_contour': True,
-    },
-    {
-        'name': 'lena_grayscale',
-        'file': 'lena_grayscale.png',
-        'mode': 'luminance',
-        'desc': 'Portrait photo – opaque RGB (luminance mode)',
-        'expect_contour': True,
-    },
-    {
-        'name': 'black_cat_photo',
-        'file': 'black_cat_photo.jpg',
-        'mode': 'luminance',
-        'desc': 'Cat silhouette JPEG – dark on light (luminance mode)',
-        'expect_contour': True,
-    },
-    {
-        'name': 'auto_mode_opaque',
-        'file': 'black_cat_photo.jpg',
-        'mode': 'auto',
-        'desc': 'Auto mode on opaque JPEG – should choose luminance',
-        'expect_contour': True,
-    },
-    {
-        'name': 'auto_mode_transparent',
-        'file': 'python_logo_transparent.png',
-        'mode': 'auto',
-        'desc': 'Auto mode on transparent PNG – should choose alpha',
-        'expect_contour': True,
-    },
-]
-
-
-@pytest.mark.parametrize('case', FIXTURE_CASES, ids=[c['name'] for c in FIXTURE_CASES])
+@pytest.mark.parametrize('case', _discover_fixture_cases(),
+                         ids=[c['name'] for c in _discover_fixture_cases()])
 def test_fixture_image_pipeline(case):
-    """Load fixture image, run get_outline_coords, validate and save SVG overlay."""
-    img = get_fixture(case['file'])
+    """Load every image in tests/fixtures/ and validate get_outline_coords.
+
+    Mode is chosen automatically ('auto').  A contour must be detected,
+    stay within the image bounds, and cover a meaningful fraction of the image.
+    An SVG overlay is written to tests/image_outline_outputs/ for inspection.
+    """
+    path = os.path.join(FIXTURES_DIR, case['file'])
+    img = Image.open(path).copy()
     img_rgba = img.convert('RGBA')
     w, h = img_rgba.size
 
     coords = get_outline_coords(img_rgba, mode=case['mode'])
 
-    out_name = f"{case['name']}_{case['mode']}.svg"
-    out_path = os.path.join(OUTPUT_DIR, out_name)
+    out_path = os.path.join(OUTPUT_DIR, f"{case['name']}.svg")
     save_svg_overlay(img_rgba, coords, out_path)
 
-    if case['expect_contour']:
-        assert coords is not None, (
-            f"{case['desc']}: expected a contour but got None. "
-            f"SVG overlay: {out_path}"
-        )
-        assert len(coords) >= 4, f"Too few contour points: {len(coords)}"
+    assert coords is not None, (
+        f"{case['file']}: no contour detected. SVG: {out_path}"
+    )
+    assert len(coords) >= 4, f"Too few points: {len(coords)}"
 
-        xs = [c[0] for c in coords]
-        ys = [c[1] for c in coords]
-        assert min(xs) >= -1,     f"x underflow: {min(xs):.1f}"
-        assert max(xs) <= w + 1,  f"x overflow: {max(xs):.1f} > {w}"
-        assert min(ys) >= -1,     f"y underflow: {min(ys):.1f}"
-        assert max(ys) <= h + 1,  f"y overflow: {max(ys):.1f} > {h}"
+    xs = [c[0] for c in coords]
+    ys = [c[1] for c in coords]
+    assert min(xs) >= -1,    f"x underflow: {min(xs):.1f}"
+    assert max(xs) <= w + 1, f"x overflow:  {max(xs):.1f} > {w}"
+    assert min(ys) >= -1,    f"y underflow: {min(ys):.1f}"
+    assert max(ys) <= h + 1, f"y overflow:  {max(ys):.1f} > {h}"
 
-        area = polygon_area(coords)
-        coverage = area / (w * h)
-        assert coverage > 0.02, (
-            f"Contour area {area:.0f}px² = {coverage*100:.1f}% – too small"
-        )
-        assert coverage < 0.99, (
-            f"Contour covers {coverage*100:.1f}% – entire image (no subject found)"
-        )
+    area     = polygon_area(coords)
+    coverage = area / (w * h)
+    assert coverage > 0.02, (
+        f"Contour covers only {coverage*100:.1f}% of image – too small"
+    )
+    assert coverage < 0.99, (
+        f"Contour covers {coverage*100:.1f}% – entire image traced (no subject found)"
+    )
 
 
 # ---------------------------------------------------------------------------
-# Additional edge-case / constructed tests (no fixtures needed)
+# Constructed edge-case tests (no fixture files needed)
 # ---------------------------------------------------------------------------
 
 def test_gradient_background():
-    """Gradient background – hardest luminance case."""
+    """Gradient background – hardest luminance case; must not raise."""
     size = 200
     img = Image.new('RGB', (size, size))
     for x in range(size):
@@ -299,7 +282,6 @@ def test_gradient_background():
         for y in range(size):
             img.putpixel((x, y), (v, v, v))
     ImageDraw.Draw(img).ellipse([60, 60, 140, 140], fill=(30, 30, 30))
-
     coords = get_outline_coords(img.convert('RGBA'), mode='luminance')
     if coords is not None:
         cx, cy = centroid(coords)
@@ -323,15 +305,13 @@ def test_multi_region_keeps_largest():
     size = 300
     img = Image.new('RGBA', (size, size), (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
-    draw.ellipse([60, 60, 220, 220], fill=(255, 0, 0, 255))    # big  r≈80
-    draw.ellipse([255, 15, 285, 45], fill=(0, 0, 255, 255))    # tiny r≈15
-
+    draw.ellipse([60, 60, 220, 220], fill=(255, 0, 0, 255))
+    draw.ellipse([255, 15, 285, 45],  fill=(0, 0, 255, 255))
     coords = get_outline_coords(img, mode='alpha')
     assert coords is not None
-
     cx, cy = centroid(coords)
-    assert abs(cx - 140) < 50, f"cx={cx:.1f} should be near big-circle centre 140"
-    assert abs(cy - 140) < 50, f"cy={cy:.1f} should be near big-circle centre 140"
+    assert abs(cx - 140) < 50
+    assert abs(cy - 140) < 50
 
 
 def test_tall_aspect_ratio():
@@ -353,7 +333,6 @@ def test_wide_aspect_ratio():
 
 
 def test_anti_aliased_edges():
-    """Gaussian-blurred circle edge – simulates anti-aliased transparent PNG."""
     size = 200
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     ImageDraw.Draw(img).ellipse([40, 40, 160, 160], fill=(180, 60, 200, 255))
@@ -366,7 +345,6 @@ def test_anti_aliased_edges():
 
 
 def test_star_shape_alpha():
-    """Non-convex 5-pointed star on transparent background."""
     size = 200
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     cx, cy, ro, ri = size//2, size//2, 80, 35
@@ -382,10 +360,9 @@ def test_star_shape_alpha():
 
 
 def test_simplification_produces_fewer_points():
-    """Coarser simplification must yield ≤ points than finer."""
     img = Image.new('RGBA', (200, 200), (0, 0, 0, 0))
     ImageDraw.Draw(img).ellipse([30, 30, 170, 170], fill=(200, 50, 50, 255))
-    fine = get_outline_coords(img, mode='alpha', simplification=0.5)
+    fine   = get_outline_coords(img, mode='alpha', simplification=0.5)
     coarse = get_outline_coords(img, mode='alpha', simplification=8.0)
     if fine and coarse:
         assert len(coarse) <= len(fine) + 5
