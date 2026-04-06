@@ -92,7 +92,7 @@ def has_meaningful_alpha(img_rgba):
     """Return True when more than 5 % of pixels have alpha < 250."""
     alpha = np.array(img_rgba.getchannel('A'), dtype=np.uint8)
     transparent_ratio = np.sum(alpha < 250) / alpha.size
-    return transparent_ratio > 0.05
+    return bool(transparent_ratio > 0.05)
 
 
 # ---------------------------------------------------------------------------
